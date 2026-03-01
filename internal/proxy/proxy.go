@@ -33,9 +33,11 @@ type Handler struct {
 
 func NewHandler(cfg *config.Config, auth AuthResolver) *Handler {
 	return &Handler{
-		cfg:         cfg,
-		auth:        auth,
-		client:      &http.Client{},
+		cfg:  cfg,
+		auth: auth,
+		client: &http.Client{
+			Timeout: 0, // no timeout — let upstream take as long as it needs
+		},
 		UpstreamURL: DefaultUpstreamURL,
 	}
 }
@@ -62,7 +64,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.doUpstreamRequest(r.Context(), rawBody, token)
+	resp, err := h.doUpstreamRequest(context.Background(), rawBody, token)
 	if err != nil {
 		slog.Error("Upstream request failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -82,7 +84,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resp, err = h.doUpstreamRequest(r.Context(), rawBody, token)
+		resp, err = h.doUpstreamRequest(context.Background(), rawBody, token)
 		if err != nil {
 			slog.Error("Retry upstream request failed", "error", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

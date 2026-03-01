@@ -282,8 +282,12 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", serverHost, cfg.Server.Port)
 	server := &http.Server{
-		Addr:    addr,
-		Handler: corsMiddleware(mux),
+		Addr:              addr,
+		Handler:           corsMiddleware(mux),
+		ReadHeaderTimeout: 0,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       0,
 	}
 
 	isAuth := oauthMgr.IsAuthenticated()
