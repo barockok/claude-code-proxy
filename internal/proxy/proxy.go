@@ -82,8 +82,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("Incoming request", "bytes", len(rawBody))
 
-	apiKey := r.Header.Get("x-api-key")
-	token, err := h.auth.Resolve(apiKey)
+	token, err := h.auth.Resolve("")
 	if err != nil {
 		slog.Error("Authentication failed", "error", err)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
@@ -114,7 +113,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Got 401, refreshing token and retrying")
 		h.auth.ClearCache()
 
-		token, err = h.auth.Resolve(apiKey)
+		token, err = h.auth.Resolve("")
 		if err != nil {
 			slog.Warn("Token refresh failed", "error", err)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed after retry"})
