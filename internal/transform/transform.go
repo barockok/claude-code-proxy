@@ -19,6 +19,11 @@ func InjectSystemPrompt(body map[string]interface{}) {
 	switch v := existing.(type) {
 	case []interface{}:
 		body["system"] = append([]interface{}{prompt}, v...)
+	case string:
+		body["system"] = []interface{}{prompt, map[string]interface{}{
+			"type": "text",
+			"text": v,
+		}}
 	default:
 		body["system"] = []interface{}{prompt, v}
 	}

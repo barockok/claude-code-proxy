@@ -57,6 +57,10 @@ func TestInjectSystemPrompt_ExistingString(t *testing.T) {
 	if len(system) != 2 {
 		t.Fatalf("system length = %d, want 2", len(system))
 	}
+	second := system[1].(map[string]interface{})
+	if second["type"] != "text" || second["text"] != "existing prompt" {
+		t.Fatalf("second element = %v, want text block with 'existing prompt'", second)
+	}
 }
 
 func TestStripTTL(t *testing.T) {
