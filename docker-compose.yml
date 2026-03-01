@@ -1,14 +1,10 @@
 services:
   claude-proxy:
-    image: node:22-alpine
-    working_dir: /app
-    command: sh -c "npm install --only=production 2>/dev/null || true && node server/server.js"
+    build: .
     ports:
       - "42069:42069"
     volumes:
       - ~/.claude:/root/.claude
       - ~/.claude-code-proxy:/root/.claude-code-proxy
-      - .:/app
     environment:
-      - NODE_ENV=production
-
+      - CCP_LOG_LEVEL=info
