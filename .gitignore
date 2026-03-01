@@ -3,6 +3,7 @@
 
 # OAuth tokens
 .claude-code-proxy/
+tokens.json
 
 # OS generated files
 .DS_Store
