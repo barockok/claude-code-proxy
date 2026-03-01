@@ -14,9 +14,6 @@ import (
 type mockAuthResolver struct{ token string }
 
 func (m *mockAuthResolver) Resolve(apiKey string) (string, error) {
-	if apiKey != "" {
-		return "Bearer " + apiKey, nil
-	}
 	return m.token, nil
 }
 func (m *mockAuthResolver) ClearCache() {}
@@ -30,12 +27,12 @@ func TestProxyHandler_BufferedResponse(t *testing.T) {
 			t.Errorf("missing anthropic-version header")
 		}
 
+		// Body should be passed through as-is
 		var body map[string]interface{}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		system, ok := body["system"].([]interface{})
-		if !ok || len(system) == 0 {
-			t.Error("system prompt should be injected")
+		if body["model"] != "claude-3-5-sonnet-20241022" {
+			t.Errorf("model not passed through")
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -46,7 +43,7 @@ func TestProxyHandler_BufferedResponse(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test-token"}, nil)
+	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test-token"})
 	h.UpstreamURL = upstream.URL
 
 	reqBody := `{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`
@@ -85,7 +82,7 @@ func TestProxyHandler_StreamingResponse(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"}, nil)
+	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"})
 	h.UpstreamURL = upstream.URL
 
 	reqBody := `{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}],"stream":true}`
@@ -125,7 +122,7 @@ func TestProxyHandler_401Retry(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"}, nil)
+	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"})
 	h.UpstreamURL = upstream.URL
 
 	reqBody := `{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`
@@ -143,24 +140,24 @@ func TestProxyHandler_401Retry(t *testing.T) {
 	}
 }
 
-func TestProxyHandler_PresetRoute(t *testing.T) {
+func TestProxyHandler_BodyPassthrough(t *testing.T) {
+	var receivedBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]interface{}
 		b, _ := io.ReadAll(r.Body)
-		json.Unmarshal(b, &body)
+		receivedBody = string(b)
 
 		w.Header().Set("Content-Type", "application/json")
-		system := body["system"].([]interface{})
-		json.NewEncoder(w).Encode(map[string]int{"system_count": len(system)})
+		w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer upstream.Close()
 
 	cfg := config.Defaults()
-	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"}, nil)
+	h := NewHandler(&cfg, &mockAuthResolver{token: "Bearer test"})
 	h.UpstreamURL = upstream.URL
 
-	reqBody := `{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest("POST", "/v1/somename/messages", strings.NewReader(reqBody))
+	// Send body with system prompt already set - proxy should NOT modify it
+	reqBody := `{"model":"claude-3-5-sonnet-20241022","system":"my custom prompt","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -168,5 +165,10 @@ func TestProxyHandler_PresetRoute(t *testing.T) {
 
 	if w.Code != 200 {
 		t.Errorf("status = %d, want 200", w.Code)
+	}
+
+	// Body should be passed through exactly as-is
+	if receivedBody != reqBody {
+		t.Errorf("body was modified.\ngot:  %s\nwant: %s", receivedBody, reqBody)
 	}
 }

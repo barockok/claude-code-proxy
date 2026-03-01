@@ -20,15 +20,11 @@ import (
 	"github.com/anthropics/claude-code-proxy/internal/config"
 	"github.com/anthropics/claude-code-proxy/internal/logger"
 	"github.com/anthropics/claude-code-proxy/internal/oauth"
-	"github.com/anthropics/claude-code-proxy/internal/preset"
 	"github.com/anthropics/claude-code-proxy/internal/proxy"
 )
 
 //go:embed static/*
 var staticFS embed.FS
-
-//go:embed presets/*
-var presetsFS embed.FS
 
 type pkceState struct {
 	CodeVerifier string
@@ -138,9 +134,7 @@ func main() {
 		FallbackToClaudeCode: cfg.Auth.FallbackToClaudeCode,
 	}
 
-	presetMgr := preset.NewManagerFromEmbed(presetsFS)
-
-	proxyHandler := proxy.NewHandler(&cfg, authResolver, presetMgr)
+	proxyHandler := proxy.NewHandler(&cfg, authResolver)
 
 	ticker := time.NewTicker(60 * time.Second)
 	go func() {

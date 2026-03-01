@@ -4,16 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/anthropics/claude-code-proxy/internal/config"
-	"github.com/anthropics/claude-code-proxy/internal/preset"
-	"github.com/anthropics/claude-code-proxy/internal/transform"
 )
 
 const (
@@ -23,8 +19,6 @@ const (
 	UserAgent          = "claude-code-proxy/1.0.0"
 )
 
-var presetRouteRe = regexp.MustCompile(`^/v1/(\w+)/messages$`)
-
 type AuthResolver interface {
 	Resolve(apiKeyHeader string) (string, error)
 	ClearCache()
@@ -33,16 +27,14 @@ type AuthResolver interface {
 type Handler struct {
 	cfg         *config.Config
 	auth        AuthResolver
-	presetMgr   *preset.Manager
 	client      *http.Client
 	UpstreamURL string
 }
 
-func NewHandler(cfg *config.Config, auth AuthResolver, presetMgr *preset.Manager) *Handler {
+func NewHandler(cfg *config.Config, auth AuthResolver) *Handler {
 	return &Handler{
 		cfg:         cfg,
 		auth:        auth,
-		presetMgr:   presetMgr,
 		client:      &http.Client{},
 		UpstreamURL: DefaultUpstreamURL,
 	}
@@ -54,18 +46,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var presetName string
-	path := r.URL.Path
-	if path == "/v1/messages" {
-		// standard route
-	} else if m := presetRouteRe.FindStringSubmatch(path); m != nil {
-		presetName = m[1]
-		slog.Debug("Detected preset", "name", presetName)
-	} else {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		return
-	}
-
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.Error("Failed to read request body", "error", err)
@@ -73,14 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body map[string]interface{}
-	if err := json.Unmarshal(rawBody, &body); err != nil {
-		slog.Error("Invalid JSON body", "error", err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-
-	slog.Debug("Incoming request", "bytes", len(rawBody))
+	slog.Debug("Incoming request", "path", r.URL.Path, "bytes", len(rawBody))
 
 	token, err := h.auth.Resolve("")
 	if err != nil {
@@ -89,18 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	transform.ProcessRequestBody(body, h.cfg.Proxy.StripTTL, h.cfg.Proxy.FilterSamplingParams)
-
-	if presetName != "" && h.presetMgr != nil {
-		p, err := h.presetMgr.Load(presetName)
-		if err != nil {
-			slog.Warn("Failed to load preset", "name", presetName, "error", err)
-		} else {
-			preset.Apply(body, p)
-		}
-	}
-
-	resp, err := h.doUpstreamRequest(r.Context(), body, token)
+	resp, err := h.doUpstreamRequest(r.Context(), rawBody, token)
 	if err != nil {
 		slog.Error("Upstream request failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -120,7 +82,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resp, err = h.doUpstreamRequest(r.Context(), body, token)
+		resp, err = h.doUpstreamRequest(r.Context(), rawBody, token)
 		if err != nil {
 			slog.Error("Retry upstream request failed", "error", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -176,15 +138,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) doUpstreamRequest(ctx context.Context, body map[string]interface{}, token string) (*http.Response, error) {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode body: %w", err)
-	}
+func (h *Handler) doUpstreamRequest(ctx context.Context, body []byte, token string) (*http.Response, error) {
+	slog.Debug("Outgoing request to upstream", "bytes", len(body))
 
-	slog.Debug("Outgoing request to upstream", "bytes", len(encoded))
-
-	req, err := http.NewRequestWithContext(ctx, "POST", h.UpstreamURL, bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, "POST", h.UpstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
