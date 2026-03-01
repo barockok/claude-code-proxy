@@ -1,0 +1,14 @@
+server:
+  port: 42069
+  host: "" # Auto-detect: 127.0.0.1 native, 0.0.0.0 Docker
+
+logging:
+  level: info # trace, debug, info, warn, error
+
+proxy:
+  filter_sampling_params: false
+  strip_ttl: true
+
+auth:
+  auto_open_browser: true
+  fallback_to_claude_code: true
