@@ -127,14 +127,44 @@ func main() {
 		}
 	}
 
-	oauthMgr := oauth.NewManager()
+	// Build providers
+	proxyHandler := proxy.NewHandler()
+	oauthManagers := make(map[string]*oauth.Manager)
 
-	authResolver := &auth.Resolver{
-		OAuthMgr:             oauthMgr,
-		FallbackToClaudeCode: cfg.Auth.FallbackToClaudeCode,
+	for _, name := range cfg.ProviderOrder {
+		prov := cfg.Providers[name]
+		var resolver auth.Resolver
+
+		switch prov.Auth.Type {
+		case "oauth":
+			mgr := oauth.NewManager(oauth.OAuthConfig{
+				Name:         name,
+				ClientID:     prov.Auth.ClientID,
+				AuthorizeURL: prov.Auth.AuthorizeURL,
+				TokenURL:     prov.Auth.TokenURL,
+				Scopes:       prov.Auth.Scopes,
+			})
+			oauthManagers[name] = mgr
+			resolver = auth.NewOAuthResolver(mgr)
+		case "api_key":
+			resolver = auth.NewStaticKeyResolver(
+				config.ExpandEnvVars(prov.Auth.APIKey),
+				prov.Auth.HeaderName,
+				prov.Auth.HeaderPrefix,
+			)
+		default:
+			slog.Warn("Unknown auth type, skipping provider", "provider", name, "type", prov.Auth.Type)
+			continue
+		}
+
+		proxyHandler.AddProvider(name, &proxy.ProviderEntry{
+			Upstream: prov.Upstream,
+			Auth:     resolver,
+			Headers:  prov.Headers,
+			Patterns: prov.Models,
+		})
+		slog.Info("Provider registered", "name", name, "models", prov.Models, "upstream", prov.Upstream, "auth_type", prov.Auth.Type)
 	}
-
-	proxyHandler := proxy.NewHandler(&cfg, authResolver)
 
 	ticker := time.NewTicker(60 * time.Second)
 	go func() {
@@ -145,127 +175,142 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// OAuth routes
-	mux.HandleFunc("GET /auth/login", func(w http.ResponseWriter, r *http.Request) {
-		data, err := staticFS.ReadFile("static/login.html")
-		if err != nil {
-			http.Error(w, "Not found", 404)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(data)
-	})
+	// Per-provider OAuth routes
+	for name, mgr := range oauthManagers {
+		provName := name
+		provMgr := mgr
 
-	mux.HandleFunc("GET /auth/get-url", func(w http.ResponseWriter, r *http.Request) {
-		pkce := oauth.GeneratePKCE()
-
-		pkceMu.Lock()
-		pkceStates[pkce.State] = pkceState{
-			CodeVerifier: pkce.CodeVerifier,
-			CreatedAt:    time.Now(),
-		}
-		pkceMu.Unlock()
-
-		authURL := oauth.BuildAuthorizationURL(pkce)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"url":   authURL,
-			"state": pkce.State,
-		})
-		slog.Info("Generated OAuth authorization URL")
-	})
-
-	mux.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		code := q.Get("code")
-		state := q.Get("state")
-
-		if manualCode := q.Get("manual_code"); manualCode != "" {
-			parts := strings.SplitN(manualCode, "#", 2)
-			if len(parts) != 2 {
-				http.Error(w, "Invalid code format. Expected: code#state", 400)
+		mux.HandleFunc("GET /auth/login/"+provName, func(w http.ResponseWriter, r *http.Request) {
+			data, err := staticFS.ReadFile("static/login.html")
+			if err != nil {
+				http.Error(w, "Not found", 404)
 				return
 			}
-			code = parts[0]
-			state = parts[1]
-		}
-
-		if code == "" || state == "" {
-			http.Error(w, "Missing authorization code or state", 400)
-			return
-		}
-
-		pkceMu.Lock()
-		pkceData, ok := pkceStates[state]
-		if ok {
-			delete(pkceStates, state)
-		}
-		pkceMu.Unlock()
-
-		if !ok {
-			http.Error(w, "Invalid or expired state. Please start again.", 400)
-			return
-		}
-
-		tokens, err := oauthMgr.ExchangeCodeForTokens(code, pkceData.CodeVerifier, state)
-		if err != nil {
-			slog.Error("OAuth callback error", "error", err)
 			w.Header().Set("Content-Type", "text/html")
-			w.WriteHeader(500)
-			fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Authentication Failed</title></head><body><h1>Authentication Failed</h1><p>Error: %s</p><p><a href="/auth/login">Try again</a></p></body></html>`, err.Error())
-			return
-		}
-
-		tokenData := &oauth.Tokens{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresAt:    time.Now().UnixMilli() + int64(tokens.ExpiresIn)*1000,
-		}
-		if err := oauthMgr.SaveTokens(tokenData); err != nil {
-			slog.Error("Failed to save tokens", "error", err)
-			http.Error(w, "Failed to save tokens", 500)
-			return
-		}
-
-		data, _ := staticFS.ReadFile("static/callback.html")
-		w.Header().Set("Content-Type", "text/html")
-		w.Write(data)
-		slog.Info("OAuth authentication successful")
-	})
-
-	mux.HandleFunc("GET /auth/status", func(w http.ResponseWriter, r *http.Request) {
-		isAuth := oauthMgr.IsAuthenticated()
-		exp := oauthMgr.GetTokenExpiration()
-
-		var expiresAt *string
-		if exp != nil {
-			s := exp.Format(time.RFC3339)
-			expiresAt = &s
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"authenticated": isAuth,
-			"expires_at":    expiresAt,
+			w.Write(data)
 		})
-	})
 
-	mux.HandleFunc("GET /auth/logout", func(w http.ResponseWriter, r *http.Request) {
-		if err := oauthMgr.Logout(); err != nil {
-			slog.Error("Logout error", "error", err)
+		mux.HandleFunc("GET /auth/get-url/"+provName, func(w http.ResponseWriter, r *http.Request) {
+			pkce := oauth.GeneratePKCE()
+
+			pkceMu.Lock()
+			pkceStates[pkce.State] = pkceState{
+				CodeVerifier: pkce.CodeVerifier,
+				CreatedAt:    time.Now(),
+			}
+			pkceMu.Unlock()
+
+			authURL := provMgr.BuildAuthorizationURL(pkce)
+
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(500)
-			json.NewEncoder(w).Encode(map[string]string{"error": "failed to logout"})
-			return
+			json.NewEncoder(w).Encode(map[string]string{
+				"url":   authURL,
+				"state": pkce.State,
+			})
+			slog.Info("Generated OAuth authorization URL", "provider", provName)
+		})
+
+		mux.HandleFunc("GET /auth/callback/"+provName, func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			code := q.Get("code")
+			state := q.Get("state")
+
+			if manualCode := q.Get("manual_code"); manualCode != "" {
+				parts := strings.SplitN(manualCode, "#", 2)
+				if len(parts) != 2 {
+					http.Error(w, "Invalid code format. Expected: code#state", 400)
+					return
+				}
+				code = parts[0]
+				state = parts[1]
+			}
+
+			if code == "" || state == "" {
+				http.Error(w, "Missing authorization code or state", 400)
+				return
+			}
+
+			pkceMu.Lock()
+			pkceData, ok := pkceStates[state]
+			if ok {
+				delete(pkceStates, state)
+			}
+			pkceMu.Unlock()
+
+			if !ok {
+				http.Error(w, "Invalid or expired state. Please start again.", 400)
+				return
+			}
+
+			tokens, err := provMgr.ExchangeCodeForTokens(code, pkceData.CodeVerifier, state)
+			if err != nil {
+				slog.Error("OAuth callback error", "provider", provName, "error", err)
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(500)
+				fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Authentication Failed</title></head><body><h1>Authentication Failed</h1><p>Error: %s</p><p><a href="/auth/login/%s">Try again</a></p></body></html>`, err.Error(), provName)
+				return
+			}
+
+			tokenData := &oauth.Tokens{
+				AccessToken:  tokens.AccessToken,
+				RefreshToken: tokens.RefreshToken,
+				ExpiresAt:    time.Now().UnixMilli() + int64(tokens.ExpiresIn)*1000,
+			}
+			if err := provMgr.SaveTokens(tokenData); err != nil {
+				slog.Error("Failed to save tokens", "provider", provName, "error", err)
+				http.Error(w, "Failed to save tokens", 500)
+				return
+			}
+
+			data, _ := staticFS.ReadFile("static/callback.html")
+			w.Header().Set("Content-Type", "text/html")
+			w.Write(data)
+			slog.Info("OAuth authentication successful", "provider", provName)
+		})
+	}
+
+	// Auth status for all providers
+	mux.HandleFunc("GET /auth/status", func(w http.ResponseWriter, r *http.Request) {
+		status := make(map[string]interface{})
+		for name, mgr := range oauthManagers {
+			isAuth := mgr.IsAuthenticated()
+			entry := map[string]interface{}{"authenticated": isAuth, "type": "oauth"}
+			if exp := mgr.GetTokenExpiration(); exp != nil {
+				entry["expires_at"] = exp.Format(time.RFC3339)
+			}
+			status[name] = entry
+		}
+		// api_key providers are always "authenticated"
+		for _, name := range cfg.ProviderOrder {
+			if _, isOAuth := oauthManagers[name]; !isOAuth {
+				status[name] = map[string]interface{}{"authenticated": true, "type": "api_key"}
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"message": "Logged out successfully",
-		})
-		slog.Info("User logged out")
+		json.NewEncoder(w).Encode(status)
 	})
+
+	// Logout per provider
+	for name, mgr := range oauthManagers {
+		provName := name
+		provMgr := mgr
+		mux.HandleFunc("GET /auth/logout/"+provName, func(w http.ResponseWriter, r *http.Request) {
+			if err := provMgr.Logout(); err != nil {
+				slog.Error("Logout error", "provider", provName, "error", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": "failed to logout"})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":  true,
+				"message":  "Logged out successfully",
+				"provider": provName,
+			})
+			slog.Info("User logged out", "provider", provName)
+		})
+	}
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -276,9 +321,8 @@ func main() {
 		})
 	})
 
-	// Proxy routes
-	mux.HandleFunc("POST /v1/messages", proxyHandler.ServeHTTP)
-	mux.HandleFunc("POST /v1/{preset}/messages", proxyHandler.ServeHTTP)
+	// Catch-all proxy route
+	mux.Handle("POST /", proxyHandler)
 
 	addr := fmt.Sprintf("%s:%d", serverHost, cfg.Server.Port)
 	server := &http.Server{
@@ -290,27 +334,36 @@ func main() {
 		IdleTimeout:       0,
 	}
 
-	isAuth := oauthMgr.IsAuthenticated()
-	exp := oauthMgr.GetTokenExpiration()
-
 	slog.Info(fmt.Sprintf("claude-code-proxy listening on %s", addr))
 	slog.Info("")
-	slog.Info("Authentication Status:")
-	if isAuth && exp != nil {
-		slog.Info(fmt.Sprintf("  Authenticated until %s", exp.Local().Format(time.RFC1123)))
-	} else {
-		slog.Info("  Not authenticated")
-		authURL := fmt.Sprintf("http://localhost:%d/auth/login", cfg.Server.Port)
-		slog.Info(fmt.Sprintf("  Visit %s to authenticate", authURL))
 
-		if cfg.Auth.AutoOpenBrowser && !isRunningInDocker() {
-			slog.Info("  Opening browser for authentication...")
-			go func() {
-				time.Sleep(1 * time.Second)
-				openBrowser(authURL)
-			}()
+	// Show auth status for OAuth providers
+	for name, mgr := range oauthManagers {
+		isAuth := mgr.IsAuthenticated()
+		exp := mgr.GetTokenExpiration()
+		if isAuth && exp != nil {
+			slog.Info(fmt.Sprintf("  [%s] Authenticated until %s", name, exp.Local().Format(time.RFC1123)))
+		} else {
+			authURL := fmt.Sprintf("http://localhost:%d/auth/login/%s", cfg.Server.Port, name)
+			slog.Info(fmt.Sprintf("  [%s] Not authenticated — visit %s", name, authURL))
 		}
 	}
+
+	// Auto-open browser for first unauthenticated OAuth provider
+	if !isRunningInDocker() {
+		for name, mgr := range oauthManagers {
+			if !mgr.IsAuthenticated() {
+				authURL := fmt.Sprintf("http://localhost:%d/auth/login/%s", cfg.Server.Port, name)
+				slog.Info("  Opening browser for authentication...")
+				go func() {
+					time.Sleep(1 * time.Second)
+					openBrowser(authURL)
+				}()
+				break
+			}
+		}
+	}
+
 	slog.Info("")
 
 	go func() {

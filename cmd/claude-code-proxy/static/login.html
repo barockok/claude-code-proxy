@@ -117,13 +117,20 @@
   </div>
 
   <script>
+    // Extract provider name from URL path: /auth/login/{provider}
+    const pathParts = window.location.pathname.split('/');
+    const providerName = pathParts[pathParts.length - 1];
+
+    // Update form action to include provider
+    document.querySelector('form').action = '/auth/callback/' + providerName;
+
+    // Update title
+    document.querySelector('h1').textContent = 'Authenticate with ' + providerName;
+
     document.getElementById('authButton').addEventListener('click', async function(e) {
       e.preventDefault();
-
-      // Get the auth URL from the server
-      const response = await fetch('/auth/get-url');
+      const response = await fetch('/auth/get-url/' + providerName);
       const data = await response.json();
-
       if (data.url) {
         window.open(data.url, '_blank');
       }
