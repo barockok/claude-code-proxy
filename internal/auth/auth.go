@@ -1,100 +1,62 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-
-	"github.com/anthropics/claude-code-proxy/internal/oauth"
 )
 
-type Resolver struct {
-	OAuthMgr             *oauth.Manager
-	FallbackToClaudeCode bool
-	ClaudeCredPath       string // override for testing; empty = default
-
-	mu          sync.Mutex
-	cachedToken string
+// Resolver returns (token, headerName, headerPrefix, error)
+type Resolver interface {
+	Resolve() (token string, headerName string, headerPrefix string, err error)
+	ClearCache()
 }
 
-func (r *Resolver) Resolve(apiKeyHeader string) (string, error) {
-	if apiKeyHeader != "" {
-		slog.Debug("Using x-api-key header as token")
-		token := apiKeyHeader
-		if !strings.HasPrefix(token, "Bearer ") {
-			token = "Bearer " + token
-		}
-		r.mu.Lock()
-		r.cachedToken = token
-		r.mu.Unlock()
-		return token, nil
-	}
-
-	// Try OAuth
-	if r.OAuthMgr.IsAuthenticated() {
-		slog.Debug("Using OAuth tokens")
-		tok, err := r.OAuthMgr.GetValidAccessToken()
-		if err == nil {
-			bearer := "Bearer " + tok
-			r.mu.Lock()
-			r.cachedToken = bearer
-			r.mu.Unlock()
-			return bearer, nil
-		}
-		slog.Warn("OAuth token retrieval failed", "error", err)
-	}
-
-	// Fallback to Claude Code credentials
-	if r.FallbackToClaudeCode {
-		slog.Debug("Falling back to Claude Code credentials")
-		tok, err := r.loadClaudeCodeToken()
-		if err == nil {
-			r.mu.Lock()
-			r.cachedToken = tok
-			r.mu.Unlock()
-			return tok, nil
-		}
-		slog.Warn("Claude Code credential fallback failed", "error", err)
-	}
-
-	return "", fmt.Errorf("no authentication tokens found; please authenticate at /auth/login")
+// StaticKeyResolver for api_key auth type
+type StaticKeyResolver struct {
+	apiKey       string
+	headerName   string
+	headerPrefix string
 }
 
-func (r *Resolver) ClearCache() {
-	r.mu.Lock()
-	r.cachedToken = ""
-	r.mu.Unlock()
-}
-
-func (r *Resolver) credentialsPath() string {
-	if r.ClaudeCredPath != "" {
-		return r.ClaudeCredPath
+func NewStaticKeyResolver(apiKey, headerName, headerPrefix string) *StaticKeyResolver {
+	return &StaticKeyResolver{
+		apiKey:       apiKey,
+		headerName:   headerName,
+		headerPrefix: headerPrefix,
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", ".credentials.json")
 }
 
-func (r *Resolver) loadClaudeCodeToken() (string, error) {
-	data, err := os.ReadFile(r.credentialsPath())
+func (r *StaticKeyResolver) Resolve() (string, string, string, error) {
+	return r.apiKey, r.headerName, r.headerPrefix, nil
+}
+
+func (r *StaticKeyResolver) ClearCache() {}
+
+// OAuthTokenProvider is the interface OAuth managers must implement
+type OAuthTokenProvider interface {
+	IsAuthenticated() bool
+	GetValidAccessToken() (string, error)
+}
+
+// OAuthResolver for oauth auth type
+type OAuthResolver struct {
+	oauth OAuthTokenProvider
+}
+
+func NewOAuthResolver(oauth OAuthTokenProvider) *OAuthResolver {
+	return &OAuthResolver{oauth: oauth}
+}
+
+func (r *OAuthResolver) Resolve() (string, string, string, error) {
+	if !r.oauth.IsAuthenticated() {
+		return "", "", "", fmt.Errorf("not authenticated; visit /auth/login/{provider}")
+	}
+	tok, err := r.oauth.GetValidAccessToken()
 	if err != nil {
-		return "", fmt.Errorf("failed to read Claude Code credentials: %w", err)
+		slog.Warn("OAuth token retrieval failed", "error", err)
+		return "", "", "", err
 	}
-
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken  string  `json:"accessToken"`
-			RefreshToken string  `json:"refreshToken"`
-			ExpiresAt    float64 `json:"expiresAt"`
-		} `json:"claudeAiOauth"`
-	}
-
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return "", fmt.Errorf("failed to parse credentials: %w", err)
-	}
-
-	return "Bearer " + creds.ClaudeAiOauth.AccessToken, nil
+	return tok, "Authorization", "Bearer ", nil
 }
+
+func (r *OAuthResolver) ClearCache() {}

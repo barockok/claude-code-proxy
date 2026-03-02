@@ -1,95 +1,75 @@
 package auth
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/anthropics/claude-code-proxy/internal/oauth"
 )
 
-func TestResolveFromHeader(t *testing.T) {
-	r := &Resolver{OAuthMgr: &oauth.Manager{TokenPath: "/nonexistent"}}
-	token, err := r.Resolve("sk-ant-my-api-key")
+func TestStaticKeyResolver(t *testing.T) {
+	r := NewStaticKeyResolver("sk-test-123", "Authorization", "Bearer ")
+	token, header, prefix, err := r.Resolve()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Resolve error: %v", err)
 	}
-	if token != "Bearer sk-ant-my-api-key" {
-		t.Errorf("token = %q, want Bearer sk-ant-my-api-key", token)
+	if token != "sk-test-123" {
+		t.Errorf("token = %q, want sk-test-123", token)
+	}
+	if header != "Authorization" {
+		t.Errorf("header = %q, want Authorization", header)
+	}
+	if prefix != "Bearer " {
+		t.Errorf("prefix = %q, want 'Bearer '", prefix)
 	}
 }
 
-func TestResolveFromHeaderAlreadyBearer(t *testing.T) {
-	r := &Resolver{OAuthMgr: &oauth.Manager{TokenPath: "/nonexistent"}}
-	token, err := r.Resolve("Bearer sk-ant-test")
+func TestStaticKeyResolver_CustomHeader(t *testing.T) {
+	r := NewStaticKeyResolver("AIza-test", "x-goog-api-key", "")
+	token, header, prefix, err := r.Resolve()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Resolve error: %v", err)
 	}
-	if token != "Bearer sk-ant-test" {
-		t.Errorf("token = %q, want Bearer sk-ant-test", token)
+	if token != "AIza-test" {
+		t.Errorf("token = %q, want AIza-test", token)
+	}
+	if header != "x-goog-api-key" {
+		t.Errorf("header = %q, want x-goog-api-key", header)
+	}
+	if prefix != "" {
+		t.Errorf("prefix = %q, want empty", prefix)
 	}
 }
 
-func TestResolveFromOAuth(t *testing.T) {
-	dir := t.TempDir()
-	tokenPath := filepath.Join(dir, "tokens.json")
+type mockOAuthMgr struct {
+	authenticated bool
+	token         string
+	err           error
+}
 
-	mgr := &oauth.Manager{TokenPath: tokenPath}
-	mgr.SaveTokens(&oauth.Tokens{
-		AccessToken:  "oauth_token",
-		RefreshToken: "refresh",
-		ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
-	})
+func (m *mockOAuthMgr) IsAuthenticated() bool                { return m.authenticated }
+func (m *mockOAuthMgr) GetValidAccessToken() (string, error) { return m.token, m.err }
 
-	r := &Resolver{OAuthMgr: mgr, FallbackToClaudeCode: false}
-	token, err := r.Resolve("")
+func TestOAuthResolver(t *testing.T) {
+	mock := &mockOAuthMgr{authenticated: true, token: "access-tok"}
+	r := NewOAuthResolver(mock)
+	token, header, prefix, err := r.Resolve()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Resolve error: %v", err)
 	}
-	if token != "Bearer oauth_token" {
-		t.Errorf("token = %q, want Bearer oauth_token", token)
+	if token != "access-tok" {
+		t.Errorf("token = %q, want access-tok", token)
+	}
+	if header != "Authorization" {
+		t.Errorf("header = %q, want Authorization", header)
+	}
+	if prefix != "Bearer " {
+		t.Errorf("prefix = %q, want 'Bearer '", prefix)
 	}
 }
 
-func TestResolveFromClaudeCodeCredentials(t *testing.T) {
-	dir := t.TempDir()
-	credPath := filepath.Join(dir, ".claude", ".credentials.json")
-	os.MkdirAll(filepath.Dir(credPath), 0o755)
-
-	creds := map[string]interface{}{
-		"claudeAiOauth": map[string]interface{}{
-			"accessToken":  "cli_token",
-			"refreshToken": "cli_refresh",
-			"expiresAt":    float64(time.Now().Add(time.Hour).UnixMilli()),
-		},
-	}
-	data, _ := json.Marshal(creds)
-	os.WriteFile(credPath, data, 0o644)
-
-	oauthMgr := &oauth.Manager{TokenPath: filepath.Join(dir, "nonexistent", "tokens.json")}
-	r := &Resolver{
-		OAuthMgr:             oauthMgr,
-		FallbackToClaudeCode: true,
-		ClaudeCredPath:       credPath,
-	}
-
-	token, err := r.Resolve("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if token != "Bearer cli_token" {
-		t.Errorf("token = %q, want Bearer cli_token", token)
-	}
-}
-
-func TestResolveNoAuth(t *testing.T) {
-	mgr := &oauth.Manager{TokenPath: "/nonexistent/tokens.json"}
-	r := &Resolver{OAuthMgr: mgr, FallbackToClaudeCode: false}
-
-	_, err := r.Resolve("")
+func TestOAuthResolver_NotAuthenticated(t *testing.T) {
+	mock := &mockOAuthMgr{authenticated: false}
+	r := NewOAuthResolver(mock)
+	_, _, _, err := r.Resolve()
 	if err == nil {
-		t.Error("expected error when no auth available")
+		t.Fatal("expected error when not authenticated")
 	}
 }
