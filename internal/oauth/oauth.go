@@ -44,7 +44,17 @@ type TokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 }
 
+type OAuthConfig struct {
+	Name         string
+	ClientID     string
+	AuthorizeURL string
+	TokenURL     string
+	RedirectURI  string
+	Scopes       string
+}
+
 type Manager struct {
+	Config    OAuthConfig
 	TokenPath string
 	TokenURL  string // overridable for testing
 
@@ -53,11 +63,17 @@ type Manager struct {
 	cachedToken    string
 }
 
-func NewManager() *Manager {
+func NewManager(cfg OAuthConfig) *Manager {
 	home, _ := os.UserHomeDir()
+	redirectURI := cfg.RedirectURI
+	if redirectURI == "" {
+		redirectURI = DefaultRedirectURI
+	}
+	cfg.RedirectURI = redirectURI
 	return &Manager{
-		TokenPath: filepath.Join(home, ".claude-code-proxy", "tokens.json"),
-		TokenURL:  DefaultTokenURL,
+		Config:    cfg,
+		TokenPath: filepath.Join(home, ".claude-code-proxy", fmt.Sprintf("tokens-%s.json", cfg.Name)),
+		TokenURL:  cfg.TokenURL,
 	}
 }
 
@@ -80,18 +96,18 @@ func GeneratePKCE() PKCE {
 	}
 }
 
-func BuildAuthorizationURL(pkce PKCE) string {
+func (m *Manager) BuildAuthorizationURL(pkce PKCE) string {
 	params := url.Values{
 		"code":                  {"true"},
-		"client_id":             {DefaultClientID},
+		"client_id":             {m.Config.ClientID},
 		"response_type":         {"code"},
-		"redirect_uri":          {DefaultRedirectURI},
-		"scope":                 {DefaultScope},
+		"redirect_uri":          {m.Config.RedirectURI},
+		"scope":                 {m.Config.Scopes},
 		"code_challenge":        {pkce.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {pkce.State},
 	}
-	return DefaultAuthorizeURL + "?" + params.Encode()
+	return m.Config.AuthorizeURL + "?" + params.Encode()
 }
 
 func (m *Manager) ExchangeCodeForTokens(code, codeVerifier, state string) (*TokenResponse, error) {
@@ -99,9 +115,9 @@ func (m *Manager) ExchangeCodeForTokens(code, codeVerifier, state string) (*Toke
 		"grant_type":    "authorization_code",
 		"code":          code,
 		"state":         state,
-		"client_id":     DefaultClientID,
+		"client_id":     m.Config.ClientID,
 		"code_verifier": codeVerifier,
-		"redirect_uri":  DefaultRedirectURI,
+		"redirect_uri":  m.Config.RedirectURI,
 	}
 	return m.makeTokenRequest(payload)
 }
@@ -138,7 +154,7 @@ func (m *Manager) RefreshAccessToken() (*TokenResponse, error) {
 	payload := map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": tokens.RefreshToken,
-		"client_id":     DefaultClientID,
+		"client_id":     m.Config.ClientID,
 	}
 
 	resp, err := m.makeTokenRequest(payload)

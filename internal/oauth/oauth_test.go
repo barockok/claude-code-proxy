@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,12 +30,21 @@ func TestGeneratePKCE(t *testing.T) {
 }
 
 func TestBuildAuthorizationURL(t *testing.T) {
+	mgr := NewManager(OAuthConfig{
+		Name:         "anthropic",
+		ClientID:     DefaultClientID,
+		AuthorizeURL: DefaultAuthorizeURL,
+		TokenURL:     DefaultTokenURL,
+		RedirectURI:  DefaultRedirectURI,
+		Scopes:       DefaultScope,
+	})
+
 	pkce := PKCE{
 		CodeChallenge: "test_challenge",
 		State:         "test_state",
 	}
 
-	url := BuildAuthorizationURL(pkce)
+	url := mgr.BuildAuthorizationURL(pkce)
 
 	if url == "" {
 		t.Fatal("URL should not be empty")
@@ -226,6 +236,41 @@ func TestFilePermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0o600 {
 		t.Errorf("file permissions = %o, want 600", perm)
+	}
+}
+
+func TestNewManagerWithConfig(t *testing.T) {
+	mgr := NewManager(OAuthConfig{
+		Name:         "test-provider",
+		ClientID:     "custom-client-id",
+		AuthorizeURL: "https://example.com/auth",
+		TokenURL:     "https://example.com/token",
+		RedirectURI:  "https://example.com/callback",
+		Scopes:       "read write",
+	})
+	if !strings.Contains(mgr.TokenPath, "tokens-test-provider.json") {
+		t.Errorf("TokenPath = %q, want to contain tokens-test-provider.json", mgr.TokenPath)
+	}
+	if mgr.Config.ClientID != "custom-client-id" {
+		t.Errorf("ClientID = %q, want custom-client-id", mgr.Config.ClientID)
+	}
+}
+
+func TestBuildAuthorizationURLWithConfig(t *testing.T) {
+	mgr := NewManager(OAuthConfig{
+		Name:         "test",
+		ClientID:     "my-client",
+		AuthorizeURL: "https://auth.example.com/authorize",
+		RedirectURI:  DefaultRedirectURI,
+		Scopes:       "scope1 scope2",
+	})
+	pkce := GeneratePKCE()
+	url := mgr.BuildAuthorizationURL(pkce)
+	if !strings.Contains(url, "https://auth.example.com/authorize") {
+		t.Errorf("URL should use configured authorize_url, got %s", url)
+	}
+	if !strings.Contains(url, "client_id=my-client") {
+		t.Errorf("URL should use configured client_id, got %s", url)
 	}
 }
 
