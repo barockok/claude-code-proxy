@@ -4,7 +4,7 @@ services:
     ports:
       - "42069:42069"
     volumes:
-      - ~/.claude:/root/.claude
       - ~/.claude-code-proxy:/root/.claude-code-proxy
+      - ./config.yaml:/config.yaml:ro
     environment:
       - CCP_LOG_LEVEL=info

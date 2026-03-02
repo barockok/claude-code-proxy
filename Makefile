@@ -19,6 +19,5 @@ docker-build:
 
 docker-run: docker-build
 	docker run -p 42069:42069 \
-		-v ~/.claude:/root/.claude \
 		-v ~/.claude-code-proxy:/root/.claude-code-proxy \
 		claude-code-proxy
