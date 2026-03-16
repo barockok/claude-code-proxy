@@ -1,9 +1,10 @@
 # Go binary
 /claude-code-proxy
 
-# OAuth tokens
+# OAuth tokens & credentials
 .claude-code-proxy/
 tokens.json
+.credentials.json
 
 # OS generated files
 .DS_Store

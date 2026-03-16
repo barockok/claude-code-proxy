@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 )
 
 // Resolver returns (token, headerName, headerPrefix, error)
@@ -60,3 +63,44 @@ func (r *OAuthResolver) Resolve() (string, string, string, error) {
 }
 
 func (r *OAuthResolver) ClearCache() {}
+
+// ClaudeCodeResolver reads accessToken from ~/.claude-code-proxy/.credentials.json
+// Token refresh is managed externally (e.g. by Claude Code CLI).
+type ClaudeCodeResolver struct{}
+
+type claudeCodeCredentials struct {
+	ClaudeAiOauth struct {
+		AccessToken string `json:"accessToken"`
+	} `json:"claudeAiOauth"`
+}
+
+func NewClaudeCodeResolver() *ClaudeCodeResolver {
+	return &ClaudeCodeResolver{}
+}
+
+func (r *ClaudeCodeResolver) Resolve() (string, string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+
+	path := filepath.Join(home, ".claude-code-proxy", ".credentials.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", "", fmt.Errorf("cannot read credentials file %s: %w", path, err)
+	}
+
+	var creds claudeCodeCredentials
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", "", "", fmt.Errorf("cannot parse credentials file: %w", err)
+	}
+
+	token := creds.ClaudeAiOauth.AccessToken
+	if token == "" {
+		return "", "", "", fmt.Errorf("no accessToken in credentials file %s", path)
+	}
+
+	return token, "Authorization", "Bearer ", nil
+}
+
+func (r *ClaudeCodeResolver) ClearCache() {}

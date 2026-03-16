@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -71,5 +73,42 @@ func TestOAuthResolver_NotAuthenticated(t *testing.T) {
 	_, _, _, err := r.Resolve()
 	if err == nil {
 		t.Fatal("expected error when not authenticated")
+	}
+}
+
+func TestClaudeCodeResolver(t *testing.T) {
+	// Set up fake home with credentials file
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	dir := filepath.Join(tmpHome, ".claude-code-proxy")
+	os.MkdirAll(dir, 0o700)
+	creds := `{"claudeAiOauth":{"accessToken":"sk-ant-test-token","refreshToken":"rt","expiresAt":9999999999999}}`
+	os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(creds), 0o600)
+
+	r := NewClaudeCodeResolver()
+	token, header, prefix, err := r.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve error: %v", err)
+	}
+	if token != "sk-ant-test-token" {
+		t.Errorf("token = %q, want sk-ant-test-token", token)
+	}
+	if header != "Authorization" {
+		t.Errorf("header = %q, want Authorization", header)
+	}
+	if prefix != "Bearer " {
+		t.Errorf("prefix = %q, want 'Bearer '", prefix)
+	}
+}
+
+func TestClaudeCodeResolver_MissingFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	r := NewClaudeCodeResolver()
+	_, _, _, err := r.Resolve()
+	if err == nil {
+		t.Fatal("expected error when credentials file missing")
 	}
 }

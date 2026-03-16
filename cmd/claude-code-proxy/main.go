@@ -152,6 +152,8 @@ func main() {
 				prov.Auth.HeaderName,
 				prov.Auth.HeaderPrefix,
 			)
+		case "claude_code":
+			resolver = auth.NewClaudeCodeResolver()
 		default:
 			slog.Warn("Unknown auth type, skipping provider", "provider", name, "type", prov.Auth.Type)
 			continue
